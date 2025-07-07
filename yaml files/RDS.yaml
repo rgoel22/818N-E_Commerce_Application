@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template to create a highly available, encrypted MySQL RDS instance with storage auto-scaling and default KMS encryption at rest.
+
+Parameters:
+  DBInstanceIdentifier:
+    Description: "The name of the RDS instance"
+    Type: String
+    Default: "e-commerce"
+
+  DBPassword:
+    Description: "The password for the RDS instance master user."
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
+    AllowedPattern: "[a-zA-Z0-9]*"
+    ConstraintDescription: "Must contain only alphanumeric characters."
+
+  DBAllocatedStorage:
+    Description: "The allocated storage for the RDS instance in GB."
+    Type: Number
+    Default: 20
+
+  DBInstanceClass:
+    Description: "The compute and memory capacity of the DB instance."
+    Type: String
+    Default: db.t3.medium
+    
+Resources:
+  # Create a DB Subnet Group for RDS (for Multi-AZ support)
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Subnet group for RDS instance in private subnets"
+      SubnetIds:
+        - !ImportValue PrivateSubnet1  # Use imported value from VPC template
+        - !ImportValue PrivateSubnet2  # Use imported value from VPC template
+      Tags:
+        - Key: Name
+          Value: "RDS Subnet Group"
+
+  MyDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Ref DBInstanceIdentifier
+      AllocatedStorage: !Ref DBAllocatedStorage
+      MaxAllocatedStorage: 100
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: MySQL
+      EngineVersion: '8.0'
+      MasterUsername: admin
+      MasterUserPassword: !Ref DBPassword
+      DBName: ecommerce_1
+      MultiAZ: true
+      StorageType: gp2
+      StorageEncrypted: true
+      BackupRetentionPeriod: 7
+      VPCSecurityGroups:
+        - !ImportValue RDSSecurityGroupId  # Imported RDS Security Group
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      PubliclyAccessible: false
+    DeletionPolicy: Snapshot
+
+Outputs:
+  DBInstanceEndpoint:
+    Description: "RDS MySQL Endpoint"
+    Value: !GetAtt MyDBInstance.Endpoint.Address
+
+  DBInstancePort:
+    Description: "RDS MySQL Port"
+    Value: !GetAtt MyDBInstance.Endpoint.Port

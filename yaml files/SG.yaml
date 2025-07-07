@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for security groups for the VPC, including ALB, Auto Scaling instances, RDS, and Bastion Host.
+
+Resources:
+  # Security Group for RDS (allows MySQL traffic on port 3306)
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow MySQL access to RDS"
+      VpcId: !ImportValue VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 10.0.0.0/16  # Use the VPC CIDR block for internal traffic
+      Tags:
+        - Key: Name
+          Value: "RDS Security Group"
+
+  # Security Group for Auto Scaling instances (allow HTTP/HTTPS traffic and SSH from Bastion Host)
+  AutoscalingSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow HTTP, HTTPS, and SSH access to EC2 instances"
+      VpcId: !ImportValue VPCId
+      SecurityGroupIngress:
+        # Allow HTTP traffic from ALB
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 10.0.0.0/16  # Internal traffic from ALB within the VPC
+        # Allow HTTPS traffic from ALB
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16  # Internal HTTPS traffic from ALB within the VPC
+        # Allow SSH traffic from the Bastion Host's subnet or private IP
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.0.1.0/24  # Replace this with the Bastion Host subnet CIDR or specific IP
+      Tags:
+        - Key: Name
+          Value: "Autoscaling Security Group"
+
+  # Security Group for ALB (allow HTTP/HTTPS traffic)
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow HTTP and HTTPS traffic to the ALB"
+      VpcId: !ImportValue VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0  # Allow public HTTP traffic from the internet
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0  # Allow public HTTPS traffic from the internet
+      Tags:
+        - Key: Name
+          Value: "ALB Security Group"
+
+  # Security Group for Bastion Host (allow SSH access from the team’s IPs)
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow SSH access to Bastion Host"
+      VpcId: !ImportValue VPCId
+      SecurityGroupIngress:
+        # Your IP 1
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 50.237.13.57/32  # IP 1
+        # Your IP 2
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 50.237.13.62/32  # IP 2
+        # Teammate's IP 3
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 69.137.233.24/32  # IP 3
+        # Teammate's IP 4
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 98.192.33.217/32  # IP 4
+      Tags:
+        - Key: Name
+          Value: "Bastion Security Group"
+
+Outputs:
+  RDSSecurityGroupId:
+    Description: "Security Group ID for RDS"
+    Value: !Ref RDSSecurityGroup
+    Export:
+      Name: RDSSecurityGroupId
+
+  AutoscalingSecurityGroupId:
+    Description: "Security Group ID for Auto Scaling instances"
+    Value: !Ref AutoscalingSecurityGroup
+    Export:
+      Name: AutoscalingSecurityGroupId
+
+  ALBSecurityGroupId:
+    Description: "Security Group ID for ALB"
+    Value: !Ref ALBSecurityGroup
+    Export:
+      Name: ALBSecurityGroupId
+
+  BastionSecurityGroupId:
+    Description: "Security Group ID for Bastion Host"
+    Value: !Ref BastionSecurityGroup
+    Export:
+      Name: BastionSecurityGroupId

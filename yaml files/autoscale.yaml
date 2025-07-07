@@ -1,0 +1,203 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for an E-commerce platform with autoscaling support for instances in private subnets and a bastion host.
+
+Parameters:
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: enpm818n  
+    Description: "The name of the EC2 Key Pair to enable SSH access"
+
+  AMIId:
+    Type: AWS::EC2::Image::Id
+    Description: "The AMI ID for the EC2 instances"
+
+Resources:
+  # Bastion Host in Public Subnet
+  BastionHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      ImageId: ami-08c40ec9ead489470  # Ubuntu 20.04 LTS AMI ID for us-east-1, replace for your region
+      SubnetId: !ImportValue "PublicSubnet1"  # Bastion Host in Public Subnet 1
+      SecurityGroupIds:
+        - !ImportValue "BastionSecurityGroupId"  # Use the Bastion Security Group
+      Tags:
+        - Key: Name
+          Value: "BastionHost"
+
+  # Application Load Balancer
+  EcommerceLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: "EcommerceLoadBalancer"
+      Subnets:
+        - !ImportValue "PublicSubnet1"  # Import Public Subnet 1 from the VPC template 
+        - !ImportValue "PublicSubnet2"  # Import Public Subnet 2 from the VPC template 
+      SecurityGroups:
+        - !ImportValue "ALBSecurityGroupId" # Import Load Balancer Security Group
+      Scheme: "internet-facing"
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+
+  # Target Group for Load Balancer
+  EcommerceTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: "EcommerceTargetGroup"
+      VpcId: !ImportValue "VPCId"  # Ensure you import the correct VPC
+      Port: 80
+      Protocol: HTTP  # Specify the protocol
+      TargetType: instance
+      HealthCheckPath: "/"
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      HealthCheckPort: "80"
+      HealthCheckTimeoutSeconds: 5
+      Matcher:
+        HttpCode: "200"
+
+  # Listener for Load Balancer
+  EcommerceListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref EcommerceLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref EcommerceTargetGroup
+
+  # Launch Template for Private Instances
+  PrivateLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: "EcommercePrivateLaunchTemplate"
+      LaunchTemplateData:
+        ImageId: !Ref AMIId  # Use the AMI parameter
+        InstanceType: t3.micro
+        SecurityGroupIds:
+          - !ImportValue "AutoscalingSecurityGroupId"  # Import Auto Scaling Security Group
+        KeyName: !Ref KeyName  # Shared key name
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -e  # Exit on any error
+
+            # Go to the application directory
+            cd /var/www/html
+            sudo su
+            git checkout -- .
+            git pull origin main
+
+            # Ensure permissions are correct for the web server
+            chown -R www-data:www-data /var/www/html
+
+            # Restart Apache to apply the latest code
+            systemctl restart apache2
+
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: "EcommercePrivateInstance"
+
+  # Auto Scaling Group for Private Instances
+  PrivateAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: EcommerceLoadBalancer
+    Properties:
+      VPCZoneIdentifier:
+        - !ImportValue "PrivateSubnet1"
+        - !ImportValue "PrivateSubnet2"
+      LaunchTemplate:
+        LaunchTemplateId: !Ref PrivateLaunchTemplate
+        Version: !GetAtt PrivateLaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 5
+      DesiredCapacity: 2
+      TargetGroupARNs:
+        - !Ref EcommerceTargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+
+  # Scale-Up Policy for Private Instances
+  PrivateScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    DependsOn: PrivateAutoScalingGroup  # Ensure Auto Scaling Group is created first
+    Properties:
+      AutoScalingGroupName: !Ref PrivateAutoScalingGroup
+      PolicyType: StepScaling
+      StepAdjustments:
+      - MetricIntervalLowerBound: 0
+        ScalingAdjustment: 1
+      AdjustmentType: ChangeInCapacity
+      Cooldown: 120
+      EstimatedInstanceWarmup: 120
+
+  # Scale-Down Policy for Private Instances
+  PrivateScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    DependsOn: PrivateAutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Ref PrivateAutoScalingGroup
+      PolicyType: StepScaling
+      StepAdjustments:
+      - MetricIntervalUpperBound: 0
+        ScalingAdjustment: -1
+      AdjustmentType: ChangeInCapacity
+      Cooldown: 120
+      EstimatedInstanceWarmup: 120
+
+  # Scale-Up Alarm (>= 30% CPU)
+  ScaleUpAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Scale up when CPU Utilization is >= 50% for 50 seconds"
+      MetricName: "CPUUtilization"
+      Namespace: "AWS/EC2"
+      Statistic: "Average"
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 50
+      ComparisonOperator: "GreaterThanOrEqualToThreshold"
+      AlarmActions:
+        - !Ref PrivateScaleUpPolicy
+      Dimensions:
+        - Name: "AutoScalingGroupName"
+          Value: !Ref PrivateAutoScalingGroup
+
+  # Scale-Down Alarm (<= 10% CPU)
+  ScaleDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Scale down when CPU Utilization is <= 10% for 60 seconds"
+      MetricName: "CPUUtilization"
+      Namespace: "AWS/EC2"
+      Statistic: "Average"
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: "LessThanOrEqualToThreshold"
+      AlarmActions:
+        - !Ref PrivateScaleDownPolicy
+      Dimensions:
+        - Name: "AutoScalingGroupName"
+          Value: !Ref PrivateAutoScalingGroup
+
+Outputs:
+  PrivateAutoScalingGroupName:
+    Description: "Name of the Private Auto Scaling Group"
+    Value: !Ref PrivateAutoScalingGroup
+
+  LoadBalancerDNSName:
+    Description: "DNS Name of the Load Balancer"
+    Value: !GetAtt EcommerceLoadBalancer.DNSName
+
+  BastionHostPublicIP:
+    Description: "Public IP of the Bastion Host"
+    Value: !GetAtt BastionHost.PublicIp
